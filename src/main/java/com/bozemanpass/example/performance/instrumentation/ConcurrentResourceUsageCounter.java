@@ -29,6 +29,7 @@ import com.sun.management.ThreadMXBean;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.function.Consumer;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -37,7 +38,7 @@ import java.util.logging.Logger;
  * A ConcurrentResourceUsageCounter instance can be shared amongst all threads that are
  * concurrently working on an operation, accumulating the results of distinct
  * {@link ResourceUsageCounter} instances into the shared ConcurrentResourceUsageCounter instance.
- *
+ * <p>
  * Example:
  *
  *       class MyOperation {
@@ -76,12 +77,52 @@ public class ConcurrentResourceUsageCounter {
     private final ResourceUsageCounter main = new ResourceUsageCounter();
 
     /**
-     * Return a brand new ResourceUsageCounter, already running.
+     * Return a brand new ResourceUsageCounter, already running.  The
+     * returned counter is not associated with our object in anyway.
+     * <p>
+     * The standard usage is something likeL
+     * <p>
+     * ResourceUsageCounter x = crc.start();
+     * . . . do things . . .
+     * crc.add(x.halt());
      *
      * @return a new ResourceUsageCounter object, already started.
      */
     public ResourceUsageCounter start() {
         return new ResourceUsageCounter().start();
+    }
+
+    /**
+     * Like start(), but the returned counter will be automatically
+     * added to our tally when it is halted.  This is done via the
+     * ResourceUsageCounter.onHalt handler, so if that handler is
+     * reset, the tally will not be updated.
+     *
+     * @return a new ResourceUsageCounter object, already started.
+     */
+    public ResourceUsageCounter auto() {
+        return auto(null);
+    }
+
+    /**
+     * Like start(), but the returned counter will be automatically
+     * added to our tally when it is halted.  The supplied function
+     * will also run on halt.  This is done by setting the
+     * ResourceUsageCounter.onHalt handler, so if that handler is
+     * reset, the tally will not be updated nor the supplied
+     * function run.
+     *
+     * @param fn a function to run on halt
+     * @return a new ResourceUsageCounter object, already started.
+     */
+    public ResourceUsageCounter auto(Consumer<ResourceUsageCounter> fn) {
+        ResourceUsageCounter ret = new ResourceUsageCounter().onHalt((t) -> {
+            add(t);
+            if (null != fn) {
+                fn.accept(t);
+            }
+        });
+        return ret.start();
     }
 
     /**
@@ -102,10 +143,27 @@ public class ConcurrentResourceUsageCounter {
     }
 
     /**
+     * Accumulate the last results of ResourceUsageCounter into our counter.
+     * ResourceUsageCounter MUST NOT be running for us to obtain an accurate tally.
+     *
+     * @param c the ResourceUsageCounter to add
+     */
+    public void addLast(ResourceUsageCounter c) {
+        w.lock();
+        try {
+            main.addLast(c);
+        } catch (Throwable ex) {
+            log.log(Level.SEVERE, "Timer error!", ex);
+        } finally {
+            w.unlock();
+        }
+    }
+
+    /**
      * Returns the total CPU time in nanoseconds.
      *
-     * @see ThreadMXBean#getCurrentThreadCpuTime()
      * @return the time in nanoseconds
+     * @see ThreadMXBean#getCurrentThreadCpuTime()
      */
     public long getCpuTimeNanos() {
         long ret = -1L;
@@ -123,8 +181,8 @@ public class ConcurrentResourceUsageCounter {
     /**
      * Returns the CPU time in user-mode in nanoseconds.
      *
-     * @see ThreadMXBean#getCurrentThreadUserTime()
      * @return the time in nanoseconds
+     * @see ThreadMXBean#getCurrentThreadUserTime()
      */
     public long getUsrTimeNanos() {
         long ret = -1L;
@@ -161,8 +219,8 @@ public class ConcurrentResourceUsageCounter {
     /**
      * The total memory allocated, in bytes.
      *
-     * @see ThreadMXBean#getThreadAllocatedBytes(long)
      * @return the total memory allocated, in bytes
+     * @see ThreadMXBean#getThreadAllocatedBytes(long)
      */
     public long getMemBytes() {
         long ret = -1L;

@@ -37,7 +37,6 @@ import java.io.PrintWriter;
 import java.util.*;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -63,8 +62,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 @WebServlet(urlPatterns = "/example/*", asyncSupported = true)
 public class ExampleServlet extends HttpServlet {
     private final int NUM_PROCS = Runtime.getRuntime().availableProcessors();
-    private final ExecutorService executor = Executors.newFixedThreadPool(NUM_PROCS);
-    private final LinkedBlockingQueue<MyOperation> workQueue = new LinkedBlockingQueue<>();
+    private final ExecutorService executor = Executors.newCachedThreadPool();
 
     /**
      * Process an HTTP GET request.
@@ -77,13 +75,61 @@ public class ExampleServlet extends HttpServlet {
      */
     @Override
     protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws ServletException, IOException {
-        //Switch to async processing and initializing our operation
-        MyOperation op = new MyOperation(req.startAsync());
+        //Switch the request to async processing.
+        AsyncContext ctx = req.startAsync();
 
-        //Offer the operation to the work queue so that our worker threads can start processing it
-        if (!workQueue.offer(op)) {
-            //if the queue cannot take the operation, close it now
-            op.complete(HttpServletResponse.SC_SERVICE_UNAVAILABLE);
+        //Initialize the operation.
+        MyOperation op = new MyOperation(ctx);
+
+        //Send it off to be worked on.
+        processOperation(op);
+    }
+
+    /**
+     * Submit the operation to a pool of workers to be processed.
+     *
+     * @param op MyOperation
+     */
+    private void processOperation(MyOperation op) {
+        //this will submit as many jobs as we have processors (or at least 2), processing the
+        //operation.  in a real application, we would put in safeguards to prevent creating
+        //too many threads, building up too long a queue of tasks, etc.  but for this example,
+        //the goal is to get multiple threads concurrently processing each operation, which this
+        //accomplishes nicely
+        for (int i = 0; i < Math.max(2, NUM_PROCS); i++) {
+            executor.submit(() -> {
+                try {
+                    //start the resource counter
+                    //this is really the heart of the example
+                    ResourceUsageCounter x = op.perf.start();
+                    try {
+                        //keep going until we are done or at least closed
+                        while (!op.isClosed() && !op.isFull()) {
+                            //could be anything, but for us, find some primes
+                            op.doSomething();
+
+                            //update the counter in the loop.  we don't want
+                            //to wait until it is all over, else the main counter
+                            //may not have received anything from us before op.complete()
+                            //is called by another thread.
+                            op.perf.addLast(x.split());
+                        }
+                    } finally {
+                        //halt the timer
+                        op.perf.addLast(x.halt());
+                    }
+                } catch (Throwable t) {
+                    log("Error in worker!", t);
+                } finally {
+                    //finish out the request.  this is safe to call here, since one (and only one)
+                    //thread will be granted permission to call AsyncContext.complete()
+                    try {
+                        op.complete();
+                    } catch (Throwable t) {
+                        log("Error completing operation!", t);
+                    }
+                }
+            });
         }
     }
 
@@ -102,57 +148,6 @@ public class ExampleServlet extends HttpServlet {
         } catch (Throwable t) {
             log("Error enabling resource tracking in JVM!", t);
         }
-
-        //this will submit as many jobs as we have processors, all processing the same work queue
-        for (int i = 0; i < NUM_PROCS; i++) {
-            executor.submit(() -> {
-                while (true) {
-                    try {
-                        //pull an operation of the queue, blocking if necessary until one is available
-                        MyOperation op;
-                        try {
-                            op = workQueue.take();
-                        } catch (InterruptedException ex) {
-                            continue;
-                        }
-
-                        //if the operation is already closed, skip it
-                        if (op.closed.get()) {
-                            continue;
-                        }
-
-                        //start the resource counter
-                        //this is really the heart of the example
-                        ResourceUsageCounter t = op.perf.start();
-                        try {
-                            op.doSomething();
-                        } finally {
-                            //there isn't a lot to go wrong in this example, but
-                            //we want to ensure that no matter what happens, we stop
-                            //the counter and add the results
-                            op.perf.add(t.halt());
-                        }
-
-                        if (op.isFull()) {
-                            //if we have all the results we need, finish out the request
-                            op.complete();
-                        } else {
-                            //else offer it back to the queue
-                            if (!workQueue.offer(op)) {
-                                //if the queue cannot take the operation, close it now
-                                //the status code here could be an error, but in this case
-                                //we just acknowledge that we got the request, but didn't
-                                //really finish it
-                                op.complete(HttpServletResponse.SC_ACCEPTED);
-                            }
-                        }
-                    } catch (Throwable t) {
-                        log("Error in worker!", t);
-                    }
-                }
-
-            });
-        }
     }
 
     /**
@@ -160,7 +155,7 @@ public class ExampleServlet extends HttpServlet {
      * operation is to discover a random quantity of prime numbers.  It can
      * use a sieve, primality testing on random numbers, or a mix of both.
      */
-    private class MyOperation implements AsyncListener {
+    private class MyOperation implements AsyncListener, AutoCloseable {
         //resource usage for the whole op
         final ConcurrentResourceUsageCounter perf = new ConcurrentResourceUsageCounter();
         //hits/misses and resource usage for finding primes
@@ -172,6 +167,7 @@ public class ExampleServlet extends HttpServlet {
         final Set<Integer> results = Collections.synchronizedSet(new HashSet<Integer>());
         final AtomicBoolean closed = new AtomicBoolean(false);
         final AtomicBoolean full = new AtomicBoolean(false);
+        final AtomicBoolean ranSieve = new AtomicBoolean(false);
 
         final Random random = new Random();
 
@@ -191,43 +187,41 @@ public class ExampleServlet extends HttpServlet {
          * want to use one memory-intensive way (the sieve) and one CPU-intensive way
          * (the primality test) to give the counters something to count.
          */
-        void doSomething() {
-            //set some arbitrary conditions on when to use our primeSieve
-            if (1 == random.nextInt(2000)) {
-                ResourceUsageCounter counter = sieveStats.perf.start();
+        void doSomething() throws Exception {
+            if (closed.get()) {
+                return;
+            }
 
-                //find some primes the sieve way (this needs a lot of memory)
-                int limit = random.nextInt(7 * 1024 * 1024);
-                List<Integer> primes = primeSieve(limit);
-                results.addAll(primes);
+            //only run the sieve once.  if we wanted to up the ante
+            //we would use the results of the first sieve for the next segment,
+            //but that is really beyond the scope of the example...
+            if (ranSieve.compareAndSet(false, true)) {
+                try (ResourceUsageCounter x = sieveStats.perf.auto()) {
+                    //find some primes the sieve way (this needs a lot of memory)
+                    int limit = random.nextInt(7 * 1024 * 1024);
+                    List<Integer> primes = primeSieve(limit);
+                    results.addAll(primes);
 
-                sieveStats.hits.addAndGet(primes.size());
-                sieveStats.misses.addAndGet(limit - primes.size());
-                sieveStats.perf.add(counter.halt());
-
-                //call it good...
-                if (primes.size() > 500) {
-                    full.set(true);
+                    sieveStats.hits.addAndGet(primes.size());
+                    sieveStats.misses.addAndGet(limit - primes.size());
                 }
             } else {
-                ResourceUsageCounter counter = trialStats.perf.start();
-
-                //find some primes by testing random numbers (this needs a lot of CPU)
-                for (int candidate = random.nextInt(); ; candidate = random.nextInt()) {
-                    if (isPrime(candidate)) {
-                        results.add(candidate);
-                        trialStats.hits.incrementAndGet();
-                        break;
-                    } else {
-                        trialStats.misses.incrementAndGet();
+                try (ResourceUsageCounter x = trialStats.perf.auto()) {
+                    //find some primes by testing random numbers (this needs a lot of CPU)
+                    for (int candidate = random.nextInt(); ; candidate = random.nextInt()) {
+                        if (isPrime(candidate)) {
+                            results.add(candidate);
+                            trialStats.hits.incrementAndGet();
+                            break;
+                        } else {
+                            trialStats.misses.incrementAndGet();
+                        }
                     }
                 }
+            }
 
-                trialStats.perf.add(counter.halt());
-
-                if (1 == random.nextInt(5000)) {
-                    full.set(true);
-                }
+            if (results.size() > 300000) {
+                full.set(true);
             }
         }
 
@@ -238,6 +232,15 @@ public class ExampleServlet extends HttpServlet {
          */
         boolean isFull() {
             return full.get();
+        }
+
+        /**
+         * Have we been closed?
+         *
+         * @return true if closed, else false
+         */
+        boolean isClosed() {
+            return closed.get();
         }
 
         /**
@@ -294,6 +297,7 @@ public class ExampleServlet extends HttpServlet {
          */
         @Override
         public void onComplete(AsyncEvent event) throws IOException {
+            //this would happen if the container completed the context underneath us
             if (!closed.getAndSet(true)) {
                 logResult("CLOSED BY CONTAINER");
                 return;
@@ -345,6 +349,16 @@ public class ExampleServlet extends HttpServlet {
         @Override
         public void onStartAsync(AsyncEvent event) throws IOException {
             //pass
+        }
+
+        /**
+         * Same as complete()
+         *
+         * @throws Exception
+         */
+        @Override
+        public void close() throws Exception {
+            complete();
         }
 
         /**

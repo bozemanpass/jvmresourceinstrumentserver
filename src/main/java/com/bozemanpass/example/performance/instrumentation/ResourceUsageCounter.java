@@ -28,6 +28,7 @@ package com.bozemanpass.example.performance.instrumentation;
 import com.sun.management.ThreadMXBean;
 
 import java.lang.management.ManagementFactory;
+import java.util.function.Consumer;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -35,31 +36,31 @@ import java.util.logging.Logger;
  * This class tracks elapsed time, CPU usage, and memory allocation (in bytes).
  * For memory allocation tracking to operate, it must be supported and enabled
  * in the JVM.
- *
+ * <p>
  * Starting the counter 'checkpoints' all the values for the current thread at that moment.
- *
+ * <p>
  * Since the values relate to the current thread, this counter is not threadsafe (see
  * {@link ConcurrentResourceUsageCounter} for a threadsafe alternative).
- *
+ * <p>
  * Pausing or halting the counter updates the progress by comparing the current values
  * to those that were checkpointed previously.
- *
+ * <p>
  * "Splitting" the counter updates the values, but keeps the counter running.  It is
  * functionally the same as pausing and immediately starting the counter again.
- *
+ * <p>
  * Example usage:
- *
- *     ResourceUsageCounter counter = new ResourceUsageCounter().start();
- *     runMyCode();
- *     counter.halt();
- *     System.out.println("My code used:  " + counter.toString());
+ * <p>
+ * ResourceUsageCounter counter = new ResourceUsageCounter().start();
+ * runMyCode();
+ * counter.halt();
+ * System.out.println("My code used:  " + counter.toString());
  *
  * @see java.lang.management.ThreadMXBean
  * @see com.sun.management.ThreadMXBean
  * @see com.sun.management.ThreadMXBean#setThreadCpuTimeEnabled(boolean)
  * @see com.sun.management.ThreadMXBean#setThreadAllocatedMemoryEnabled(boolean)
  */
-public class ResourceUsageCounter {
+public class ResourceUsageCounter implements java.lang.AutoCloseable {
     private static final Logger log = Logger.getLogger(ResourceUsageCounter.class.getName());
     private final long initialStartMillis = System.currentTimeMillis();
 
@@ -79,7 +80,12 @@ public class ResourceUsageCounter {
     private long _mem = 0L;
 
     private long halted = 0L;
+    private int numPauses = 0;
     private boolean running = false;
+
+    private Consumer<ResourceUsageCounter> onHalt = null;
+    private Consumer<ResourceUsageCounter> onPause = null;
+    private Consumer<ResourceUsageCounter> onStart = null;
 
     private final boolean isThreadAllocatedMemoryEnabled;
     private final boolean isThreadCpuTimeEnabled;
@@ -117,6 +123,7 @@ public class ResourceUsageCounter {
         _mem = 0L;
     }
 
+
     /**
      * Start the counter running.
      *
@@ -127,6 +134,7 @@ public class ResourceUsageCounter {
         running = true;
 
         try {
+
             ThreadMXBean bean = (ThreadMXBean) ManagementFactory.getThreadMXBean();
 
             //stash all the current values
@@ -145,6 +153,9 @@ public class ResourceUsageCounter {
             log.log(Level.SEVERE, "Error starting counters!", t);
         }
 
+        if (null != onStart) {
+            onStart.accept(this);
+        }
         return this;
     }
 
@@ -168,6 +179,16 @@ public class ResourceUsageCounter {
      * @return this
      */
     public ResourceUsageCounter pause() {
+        return _pause(true, true);
+    }
+
+    /**
+     * Pause the counter (this will also update the calculated values).
+     *
+     * @param runHandler whether to run the onPause handler
+     * @return this
+     */
+    private ResourceUsageCounter _pause(boolean runHandler, boolean countPause) {
         if (!running || 0 != halted) {
             return this;
         }
@@ -196,6 +217,13 @@ public class ResourceUsageCounter {
             log.log(Level.SEVERE, "Error pausing counters!", t);
         }
 
+        if (countPause) {
+            numPauses++;
+        }
+
+        if (runHandler && null != onPause) {
+            onPause.accept(this);
+        }
         return this;
     }
 
@@ -205,8 +233,11 @@ public class ResourceUsageCounter {
      * @return this
      */
     public ResourceUsageCounter halt() {
-        pause();
+        _pause(false, false);
         halted = System.currentTimeMillis();
+        if (null != onHalt) {
+            onHalt.accept(this);
+        }
         return this;
     }
 
@@ -225,6 +256,21 @@ public class ResourceUsageCounter {
     }
 
     /**
+     * Add the last results of a counter to our main results.
+     * The incoming counter MUST NOT  be running in order to obtain
+     * an accurate value.
+     *
+     * @param c the counter to add to this one
+     */
+    public void addLast(ResourceUsageCounter c) {
+        //if the counter is running, we may not get anything here
+        cpuTimeNanos += c.getLastCpuTimeNanos();
+        usrTimeNanos += c.getLastUsrTimeNanos();
+        activeTimeMillis += c.getLastActiveTimeMillis();
+        memBytes += c.getLastMemBytes();
+    }
+
+    /**
      * Like {@link #toString()} but for the last run values rather
      * than for the total values.
      *
@@ -237,16 +283,14 @@ public class ResourceUsageCounter {
         ret.append("l-CPU: ");
         if (isThreadCpuTimeEnabled) {
             ret.append(String.format("%.3f", lastCpuTimeNanos / 1000000.0)).append(" ms; ");
-        }
-        else {
+        } else {
             ret.append("DISABLED");
         }
 
         ret.append("l-MemAlloc: ");
         if (isThreadAllocatedMemoryEnabled) {
             ret.append(String.format("%.2f", lastMemBytes / 1024.0)).append(" kB");
-        }
-        else {
+        } else {
             ret.append("DISABLED");
         }
 
@@ -264,39 +308,37 @@ public class ResourceUsageCounter {
         ret.append("CPU: ");
         if (isThreadCpuTimeEnabled) {
             ret.append(String.format("%.3f", cpuTimeNanos / 1000000.0)).append(" ms; ");
-        }
-        else {
+        } else {
             ret.append("DISABLED");
         }
 
         ret.append("MemAlloc: ");
         if (isThreadAllocatedMemoryEnabled) {
             ret.append(String.format("%.2f", memBytes / 1024.0)).append(" kB");
-        }
-        else {
+        } else {
             ret.append("DISABLED");
         }
 
         return ret.toString();
     }
 
-   /**
-    * Returns the total CPU time in nanoseconds.
-    *
-    * @see ThreadMXBean#getCurrentThreadCpuTime()
-    * @return the time in nanoseconds
-    */
+    /**
+     * Returns the total CPU time in nanoseconds.
+     *
+     * @return the time in nanoseconds
+     * @see ThreadMXBean#getCurrentThreadCpuTime()
+     */
     public long getCpuTimeNanos() {
         return cpuTimeNanos;
     }
 
-   /**
-    * Returns the CPU time in user-mode in nanoseconds.
-    *
-    * @see ThreadMXBean#getCurrentThreadUserTime()
-    * @return the time in nanoseconds
-    */
-     public long getUsrTimeNanos() {
+    /**
+     * Returns the CPU time in user-mode in nanoseconds.
+     *
+     * @return the time in nanoseconds
+     * @see ThreadMXBean#getCurrentThreadUserTime()
+     */
+    public long getUsrTimeNanos() {
         return usrTimeNanos;
     }
 
@@ -313,8 +355,8 @@ public class ResourceUsageCounter {
     /**
      * The total memory allocated, in bytes.
      *
-     * @see ThreadMXBean#getThreadAllocatedBytes(long)
      * @return the total memory allocated, in bytes
+     * @see ThreadMXBean#getThreadAllocatedBytes(long)
      */
     public long getMemBytes() {
         return memBytes;
@@ -336,9 +378,10 @@ public class ResourceUsageCounter {
      *
      * @return the time in nanoseconds
      */
-     public long getLastUsrTimeNanos() {
+    public long getLastUsrTimeNanos() {
         return lastUsrTimeNanos;
     }
+
 
     /**
      * Like {@link #getActiveTimeMillis()}, but the last run
@@ -346,7 +389,7 @@ public class ResourceUsageCounter {
      *
      * @return the time in nanoseconds
      */
-     public long getLastActiveTimeMillis() {
+    public long getLastActiveTimeMillis() {
         return lastActiveTimeMillis;
     }
 
@@ -356,8 +399,63 @@ public class ResourceUsageCounter {
      *
      * @return the time in nanoseconds
      */
-     public long getLastMemBytes() {
+    public long getLastMemBytes() {
         return lastMemBytes;
+    }
+
+    /**
+     * Identical to halt
+     *
+     * @throws Exception
+     */
+    @Override
+    public void close() throws Exception {
+        halt();
+    }
+
+    /**
+     * The number of times the counter has paused.
+     *
+     * @return the number of pauses
+     */
+    public int numPauses() {
+        return this.numPauses;
+    }
+
+    /**
+     * Set a function to be called on pause.  Since a split is basically a
+     * pause+start, this will also be called on split.
+     *
+     * @param onPause the function
+     * @return this
+     */
+    public ResourceUsageCounter onPause(Consumer<ResourceUsageCounter> onPause) {
+        this.onPause = onPause;
+        return this;
+    }
+
+
+    /**
+     * Set a function to be called on pause.  Since a split is basically a
+     * pause+start, this will also be called on split.
+     *
+     * @param onStart the function
+     * @return this
+     */
+    public ResourceUsageCounter onStart(Consumer<ResourceUsageCounter> onStart) {
+        this.onStart = onStart;
+        return this;
+    }
+
+    /**
+     * Set a function to be called on halt.
+     *
+     * @param onHalt the function
+     * @return this
+     */
+    public ResourceUsageCounter onHalt(Consumer<ResourceUsageCounter> onHalt) {
+        this.onHalt = onHalt;
+        return this;
     }
 }
 
