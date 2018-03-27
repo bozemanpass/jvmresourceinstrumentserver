@@ -91,7 +91,7 @@ public class ResourceUsageCounter implements java.lang.AutoCloseable {
     private final boolean isThreadCpuTimeEnabled;
 
     /**
-     * Enable allocated memory tracking and cp.  Whether this is enabled by default or not
+     * Enable allocated memory tracking and CPU.  Whether this is enabled by default or not
      * is a platform dependent.   This setting will apply JVM-wide.
      */
     public static void enableMeasurementsInJVM() {
@@ -100,11 +100,19 @@ public class ResourceUsageCounter implements java.lang.AutoCloseable {
         bean.setThreadCpuTimeEnabled(true);
     }
 
+    /**
+     * Is memory allocation tracking supported and turned on?
+     * @return true if memory allocation counters are support and enabled
+     */
     private static boolean isMemoryTrackingAvailable() {
         ThreadMXBean bean = (ThreadMXBean) ManagementFactory.getThreadMXBean();
         return bean.isThreadAllocatedMemorySupported() && bean.isThreadAllocatedMemoryEnabled();
     }
 
+    /**
+     * Is CPU time tracking supported and turned on?
+     * @return true if CPU time counters are support and enabled
+     */
     private static boolean isCpuTimeTrackingAvailable() {
         ThreadMXBean bean = (ThreadMXBean) ManagementFactory.getThreadMXBean();
         return bean.isThreadCpuTimeSupported() && bean.isThreadCpuTimeEnabled();
