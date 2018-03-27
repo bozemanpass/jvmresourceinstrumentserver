@@ -142,7 +142,6 @@ public class ResourceUsageCounter implements java.lang.AutoCloseable {
         running = true;
 
         try {
-
             ThreadMXBean bean = (ThreadMXBean) ManagementFactory.getThreadMXBean();
 
             //stash all the current values
@@ -194,6 +193,7 @@ public class ResourceUsageCounter implements java.lang.AutoCloseable {
      * Pause the counter (this will also update the calculated values).
      *
      * @param runHandler whether to run the onPause handler
+     * @param countPause whether to count this in numPauses (false when halting)
      * @return this
      */
     private ResourceUsageCounter _pause(boolean runHandler, boolean countPause) {
@@ -250,8 +250,8 @@ public class ResourceUsageCounter implements java.lang.AutoCloseable {
     }
 
     /**
-     * Add two counters together.  The incoming counter MUST NOT
-     * be running in order to obtain an accurate value.
+     * Add the total results of counter 'c' to this one.  The incoming
+     * counter MUST NOT be running in order to obtain an accurate value.
      *
      * @param c the counter to add
      */
