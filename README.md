@@ -25,11 +25,11 @@ The build output is located at 'build/libs'.  For example:
 Running
 ===========
 
-Java 8+ and a servlet-api 3.1 compatible servlet container are required to run.
+Java 8+ and a Servlet API 3.1 compatible servlet container are required to run.
 
-[Tomcat 8](https://tomcat.apache.org/) or higher is a good choice, but any servlet-api compatible container should work.  If using Tomcat, you can deploy by using the 'manger' app, or by copying the WAR package to '$CATALINA_HOME/webapps'
+[Tomcat 8](https://tomcat.apache.org/) or higher is a good choice, but any Servlet API 3.1 container should work.  If using Tomcat, you can deploy by using the 'manger' app, or by copying the WAR package to '$CATALINA_HOME/webapps'
 
 
-Unless you change the context when deploying, the initial portion of the URL will match the WAR name.  The ExampleServlet is configured to handle 'urlPatterns = "/example/\*"'.  Combined, this means you should use a URL like:
+Unless one changes the context when deploying, the initial portion of the URL will match the WAR package name.  The [ExampleServlet](https://github.com/bozemanpass/jvmresourceinstrumentserver/blob/master/src/main/java/com/bozemanpass/example/performance/instrumentation/ExampleServlet.java) is configured to handle 'urlPatterns = "/example/\*"'.  This means that by default one should use a URL similar to:
 
     $ wget -q -O - http://localhost:8080/JvmResourceInstrumentServer-1.0-SNAPSHOT/example
