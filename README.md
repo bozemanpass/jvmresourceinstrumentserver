@@ -1,11 +1,9 @@
 Overview
 ==========
 
-Example code for the article:
-https://www.bozemanpass.com/analyzing-performance-in-a-jvm-server-at-scale-by-self-measurement/
+This repository holds the example code for the article: [Analyzing Performance in a JVM Server at Scale by Self-Measurement](https://www.bozemanpass.com/analyzing-performance-in-a-jvm-server-at-scale-by-self-measurement/)
 
-It performs some "busy work" of finding primes as a way to demonstrate performance tracing and 
-self-measurement using mechanisms available in the standard JVM.
+It performs some "busy work" of finding primes as a way to demonstrate a few performance tracing and self-measurement techniques possible with the standard JVM.
 
 The [ResourceUsageCounter](https://github.com/bozemanpass/jvmresourceinstrumentserver/blob/master/src/main/java/com/bozemanpass/example/performance/instrumentation/ResourceUsageCounter.java) and [ConcurrentResourceUsageCounter](https://github.com/bozemanpass/jvmresourceinstrumentserver/blob/master/src/main/java/com/bozemanpass/example/performance/instrumentation/ConcurrentResourceUsageCounter.java) are the key classes.
 
