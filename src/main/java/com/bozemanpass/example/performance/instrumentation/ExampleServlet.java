@@ -179,13 +179,12 @@ public class ExampleServlet extends HttpServlet {
         }
 
         /**
-         * Find some primes!  In the current implementation, this is not executed
-         * by more than one thread at a time.  Since the result set is concurrency-safe,
-         * it could be though, with no real harm.  A more advanced implementation would
-         * split the prime-finding  into segments, make use of wheels, etc. all allowing
-         * for better scaling. Our goal is neither speed nor efficiency though, we just
-         * want to use one memory-intensive way (the sieve) and one CPU-intensive way
-         * (the primality test) to give the counters something to count.
+         * Find some primes!  Since the result set is concurrency-safe, this can be called
+         * by multiple threads.  A more advanced implementation would split the prime-finding
+         * into segments, make use of wheels, etc. all allowing for better scaling. Our goal
+         * is neither speed nor efficiency though, we just want to use one memory-intensive
+         * way (the sieve) and one CPU-intensive way (the primality test) to give the counters
+         * something to count.
          */
         void doSomething() throws Exception {
             if (closed.get()) {
